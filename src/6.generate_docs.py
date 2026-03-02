@@ -1593,6 +1593,7 @@ def update_sidebar(
     date_str: str,
     deep_entries: List[Tuple[str, str, List[Tuple[str, str]]]],
     quick_entries: List[Tuple[str, str, List[Tuple[str, str]]]],
+    paper_evidence_by_id: Dict[str, str],
     date_label: str | None = None,
 ) -> None:
     def build_sidebar_item_payload(
@@ -1600,6 +1601,7 @@ def update_sidebar(
         title: str,
         tags: List[Tuple[str, str]],
         route_href: str,
+        evidence: str = "",
     ) -> str:
         score_text = "-"
         clean_tags: List[Dict[str, str]] = []
@@ -1624,6 +1626,9 @@ def update_sidebar(
             "score": score_text,
             "tags": clean_tags,
         }
+        safe_evidence = str(evidence or "").strip()
+        if safe_evidence:
+            payload["evidence"] = safe_evidence
         return html.escape(json.dumps(payload, ensure_ascii=False), quote=True)
 
     effective_label = (date_label or "").strip() or format_date_str(date_str)
@@ -1676,7 +1681,8 @@ def update_sidebar(
         for paper_id, title, tags in deep_entries:
             safe_title = html.escape((title or "").strip() or paper_id)
             href = f"#/{paper_id}"
-            payload_json = build_sidebar_item_payload(paper_id, title, tags, href)
+            evidence = paper_evidence_by_id.get(str(paper_id).strip(), "")
+            payload_json = build_sidebar_item_payload(paper_id, title, tags, href, evidence)
             block.append(
                 "      * "
                 f'<a class="dpr-sidebar-item-link dpr-sidebar-item-structured" href="{href}" data-sidebar-item="{payload_json}">{safe_title}</a>\n'
@@ -1686,7 +1692,8 @@ def update_sidebar(
         for paper_id, title, tags in quick_entries:
             safe_title = html.escape((title or "").strip() or paper_id)
             href = f"#/{paper_id}"
-            payload_json = build_sidebar_item_payload(paper_id, title, tags, href)
+            evidence = paper_evidence_by_id.get(str(paper_id).strip(), "")
+            payload_json = build_sidebar_item_payload(paper_id, title, tags, href, evidence)
             block.append(
                 "      * "
                 f'<a class="dpr-sidebar-item-link dpr-sidebar-item-structured" href="{href}" data-sidebar-item="{payload_json}">{safe_title}</a>\n'
@@ -1887,6 +1894,15 @@ def sync_home_readme_from_day_report(
     with open(home_readme, "w", encoding="utf-8") as f:
         f.write(content)
     return home_readme
+
+
+def get_paper_sidebar_evidence(paper: Dict[str, Any]) -> str:
+    return str(
+        paper.get("llm_evidence_cn")
+        or paper.get("llm_evidence")
+        or paper.get("llm_evidence_en")
+        or ""
+    ).strip()
 
 
 def write_run_daily_log(
@@ -2465,6 +2481,7 @@ def main() -> None:
     def _process_section(
         section: str,
         papers: List[Dict[str, Any]],
+        paper_evidence_by_id: Dict[str, str],
     ) -> List[Tuple[str, str, List[Tuple[str, str]]]]:
         if not papers:
             return []
@@ -2491,11 +2508,14 @@ def main() -> None:
                 except Exception as e:
                     log(f"[WARN] 生成{section}论文失败：{e}")
                     continue
+                paper_evidence_by_id[str((pid or "").strip())] = get_paper_sidebar_evidence(paper)
                 section_tags = extract_sidebar_tags(paper)
                 results.append((index, (pid, title, section_tags)))
 
         results.sort(key=lambda item: item[0])
         return [v for _, v in results]
+
+    sidebar_evidence_by_id: Dict[str, str] = {}
 
     if args.sidebar_only:
         log_substep("6.2", "跳过生成文章（仅更新侧边栏）", "SKIP")
@@ -2503,21 +2523,23 @@ def main() -> None:
             title = (paper.get("title") or "").strip()
             arxiv_id = str(paper.get("id") or paper.get("paper_id") or "").strip()
             _, _, pid = prepare_paper_paths(docs_dir, date_str, title, arxiv_id)
+            sidebar_evidence_by_id[str(pid).strip()] = get_paper_sidebar_evidence(paper)
             deep_entries.append((pid, title, extract_sidebar_tags(paper)))
 
         for paper in quick_list:
             title = (paper.get("title") or "").strip()
             arxiv_id = str(paper.get("id") or paper.get("paper_id") or "").strip()
             _, _, pid = prepare_paper_paths(docs_dir, date_str, title, arxiv_id)
+            sidebar_evidence_by_id[str(pid).strip()] = get_paper_sidebar_evidence(paper)
             quick_entries.append((pid, title, extract_sidebar_tags(paper)))
         log_substep("6.3", "跳过生成文章（仅更新侧边栏）", "SKIP")
     else:
         log_substep("6.2", "生成精读区文章", "START")
-        deep_entries = _process_section("deep", deep_list)
+        deep_entries = _process_section("deep", deep_list, sidebar_evidence_by_id)
         log_substep("6.2", "生成精读区文章", "END")
 
         log_substep("6.3", "生成速读区文章", "START")
-        quick_entries = _process_section("quick", quick_list)
+        quick_entries = _process_section("quick", quick_list, sidebar_evidence_by_id)
         log_substep("6.3", "生成速读区文章", "END")
 
     log_substep("6.4", "生成当日日报并同步首页 README", "START")
@@ -2551,6 +2573,7 @@ def main() -> None:
             date_str,
             deep_entries,
             quick_entries,
+            sidebar_evidence_by_id,
             date_label=args.sidebar_date_label,
         )
         log_substep("6.5", "更新侧边栏", "END")

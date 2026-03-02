@@ -2413,6 +2413,7 @@ window.$docsify = {
           const title = String(payload.title || a.textContent || '').trim();
           const link = String(payload.link || fallbackLink || href || '').trim();
           const score = String(payload.score || '').trim();
+          const evidence = String((payload && payload.evidence) || '').trim();
           const tags = Array.isArray(payload.tags) ? payload.tags : [];
 
           const scoreHtml =
@@ -2433,7 +2434,7 @@ window.$docsify = {
 
           a.innerHTML =
             `<div class="dpr-sidebar-title">${escapeHtml(title)}</div>` +
-            `<div class="dpr-sidebar-link-line">${escapeHtml('evidence')}</div>` +
+            `<div class="dpr-sidebar-link-line">${escapeHtml(evidence || '-')}</div>` +
             `<div class="dpr-sidebar-score-line">${scoreHtml}</div>` +
             `<div class="dpr-sidebar-tags">${tagsHtml || '<span class="dpr-sidebar-tag dpr-sidebar-tag-other">-</span>'}</div>`;
           a.dataset.sidebarStructuredHydrated = '1';
