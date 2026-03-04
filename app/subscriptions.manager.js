@@ -455,17 +455,24 @@ window.SubscriptionsManager = (function () {
             <div class="chat-quick-run-title">会议论文（先保留）</div>
             <div class="chat-quick-run-row">
               <label for="arxiv-admin-quick-run-year-select">年份</label>
-              <select id="arxiv-admin-quick-run-year-select">
+              <select id="arxiv-admin-quick-run-year-select" disabled>
                 <option value="">选择年份</option>
               </select>
             </div>
             <div class="chat-quick-run-row">
               <label for="arxiv-admin-quick-run-conference-select">会议名</label>
-              <select id="arxiv-admin-quick-run-conference-select">
+              <select id="arxiv-admin-quick-run-conference-select" disabled>
                 <option value="">选择会议名</option>
               </select>
             </div>
-            <button id="arxiv-admin-quick-run-conference-run-btn" class="chat-quick-run-run-btn" type="button">运行</button>
+            <button
+              id="arxiv-admin-quick-run-conference-run-btn"
+              class="chat-quick-run-run-btn chat-quick-run-item--disabled"
+              type="button"
+              disabled
+            >
+              运行
+            </button>
             <div id="arxiv-admin-quick-run-msg" class="chat-quick-run-msg"></div>
 
             <div class="chat-quick-run-divider" aria-hidden="true"></div>
@@ -667,6 +674,17 @@ window.SubscriptionsManager = (function () {
     quickRunMsgEl = document.getElementById('arxiv-admin-quick-run-msg');
     resetContentBtn = document.getElementById('arxiv-admin-reset-content-btn');
     resetContentMsgEl = document.getElementById('arxiv-admin-reset-content-msg');
+    if (quickRunYearSelect) {
+      quickRunYearSelect.disabled = true;
+    }
+    if (quickRunConferenceSelect) {
+      quickRunConferenceSelect.disabled = true;
+    }
+    if (quickRunConferenceBtn) {
+      quickRunConferenceBtn.disabled = true;
+      quickRunConferenceBtn.classList.add('chat-quick-run-item--disabled');
+      quickRunConferenceBtn.title = '会议论文抓取功能暂未接入';
+    }
     fillQuickRunOptions(quickRunYearSelect, quickRunConferenceSelect);
     [quickRun10dBtn, quickRun30dBtn].forEach((btn) => {
       if (!btn) return;
