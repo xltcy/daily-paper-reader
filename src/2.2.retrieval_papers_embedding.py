@@ -358,13 +358,15 @@ def rank_papers_for_queries_via_supabase(
   start_dt: datetime | None = None,
   end_dt: datetime | None = None,
   time_fields: tuple[str, ...] = SUPABASE_TIME_FIELDS,
+  rpc_name_override: str | None = None,
+  rpc_mode: str = "ann",
 ) -> dict:
   if not queries:
     return {"queries": [], "papers": {}, "total_hits": 0}
 
   url = str(supabase_conf.get("url") or "").strip()
   api_key = str(supabase_conf.get("anon_key") or "").strip()
-  rpc_name = str(supabase_conf.get("vector_rpc") or "match_arxiv_papers").strip()
+  rpc_name = str(rpc_name_override or supabase_conf.get("vector_rpc") or "match_arxiv_papers").strip()
   schema = str(supabase_conf.get("schema") or "public").strip()
   if not url or not api_key:
     return {"queries": [], "papers": {}, "total_hits": 0}
@@ -375,6 +377,7 @@ def rank_papers_for_queries_via_supabase(
   id_to_paper: Dict[str, Paper] = {}
   results_per_query: List[dict] = []
   total_hits = 0
+  non_empty_queries = 0
 
   for idx, q in enumerate(queries):
     q_text = str(q.get("query_text") or "").strip()
@@ -388,7 +391,8 @@ def rank_papers_for_queries_via_supabase(
       time_fields=time_fields,
     )
     log(
-      "[Supabase Vector] "
+      f"[Supabase Vector:{rpc_mode}] "
+      f"rpc={rpc_name} "
       f"batch={idx + 1} tag={q.get('tag') or ''} "
       f"type={q.get('type') or ''} "
       f"published_window={published_window} "
@@ -408,7 +412,7 @@ def rank_papers_for_queries_via_supabase(
       end_dt=end_dt,
       time_fields=time_fields,
     )
-    log(f"[Supabase Vector] {msg} | tag={q.get('tag') or ''}")
+    log(f"[Supabase Vector:{rpc_mode}] {msg} | tag={q.get('tag') or ''}")
 
     sim_scores: Dict[str, Dict[str, float | int]] = {}
     for rank_idx, row in enumerate(rows, start=1):
@@ -443,11 +447,14 @@ def rank_papers_for_queries_via_supabase(
         "sim_scores": sim_scores,
       }
     )
+    if sim_scores:
+      non_empty_queries += 1
 
   return {
     "queries": results_per_query,
     "papers": id_to_paper,
     "total_hits": total_hits,
+    "non_empty_queries": non_empty_queries,
   }
 
 
@@ -632,21 +639,63 @@ def main() -> None:
     if supabase_enabled:
       group_start(f"Step 2.2 - supabase vector recall ({os.path.basename(input_path)})")
       try:
-        result_sb = rank_papers_for_queries_via_supabase(
-          model=filter_inst.model,
-          queries=queries,
-          top_k=dynamic_top_k,
-          supabase_conf=supabase_conf,
-          start_dt=sb_start_dt,
-          end_dt=sb_end_dt,
-          time_fields=SUPABASE_TIME_FIELDS,
-        )
-        total_hits = int(result_sb.get("total_hits") or 0)
-        if total_hits > 0:
-          log(f"[INFO] Supabase 向量召回命中 {total_hits} 条，采用数据库召回结果。")
+        exact_rpc = str(supabase_conf.get("vector_rpc_exact") or "").strip()
+        ann_rpc = str(
+          supabase_conf.get("vector_rpc_ann")
+          or supabase_conf.get("vector_rpc")
+          or "match_arxiv_papers"
+        ).strip()
+        rpc_plan: List[tuple[str, str]] = []
+        if exact_rpc:
+          rpc_plan.append(("exact", exact_rpc))
+        if ann_rpc and all(x[1] != ann_rpc for x in rpc_plan):
+          rpc_plan.append(("ann", ann_rpc))
+
+        if not rpc_plan:
+          log("[WARN] Supabase 向量召回未配置可用 RPC，将回退本地 embedding 检索。")
+
+        for mode, rpc_name in rpc_plan:
+          log(f"[INFO] Supabase 向量召回尝试：mode={mode} rpc={rpc_name}")
+          result_sb = rank_papers_for_queries_via_supabase(
+            model=filter_inst.model,
+            queries=queries,
+            top_k=dynamic_top_k,
+            supabase_conf=supabase_conf,
+            start_dt=sb_start_dt,
+            end_dt=sb_end_dt,
+            time_fields=SUPABASE_TIME_FIELDS,
+            rpc_name_override=rpc_name,
+            rpc_mode=mode,
+          )
+          total_hits = int(result_sb.get("total_hits") or 0)
+          non_empty_queries = int(result_sb.get("non_empty_queries") or 0)
+          query_total = len(queries)
+          avg_hits_per_query = (float(total_hits) / float(query_total)) if query_total > 0 else 0.0
+          expected_top = min(dynamic_top_k, total_papers)
+
+          if total_hits <= 0:
+            log(f"[WARN] Supabase 向量召回无命中（mode={mode} rpc={rpc_name}）。")
+            continue
+
+          if mode == "ann" and expected_top >= 200 and avg_hits_per_query < (expected_top * 0.8):
+            log(
+              "[WARN] Supabase ANN 召回密度偏低："
+              f"avg_hits_per_query={avg_hits_per_query:.1f}, expected≈{expected_top}。"
+              "将回退本地 embedding 精确检索。"
+            )
+            continue
+
+          log(
+            f"[INFO] Supabase 向量召回命中 {total_hits} 条，采用数据库召回结果。"
+            f" mode={mode} rpc={rpc_name} "
+            f"non_empty_queries={non_empty_queries}/{query_total} "
+            f"avg_hits_per_query={avg_hits_per_query:.1f}"
+          )
           result = result_sb
-        else:
-          log("[WARN] Supabase 向量召回无命中，将回退本地 embedding 检索。")
+          break
+
+        if result is None and rpc_plan:
+          log("[WARN] Supabase 向量召回未通过可用性检查，将回退本地 embedding 检索。")
       except Exception as e:
         log(f"[WARN] Supabase 向量召回异常，将回退本地 embedding 检索：{e}")
       finally:
